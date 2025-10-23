@@ -190,6 +190,7 @@ export class ProxyService implements BytebotAgentService {
               const toolBlock = block as ToolUseContentBlock;
               chatMessages.push({
                 role: 'assistant',
+                content: '',
                 tool_calls: [
                   {
                     id: toolBlock.id,
@@ -207,7 +208,7 @@ export class ProxyService implements BytebotAgentService {
               const thinkingBlock = block as ThinkingContentBlock;
               const message: ChatCompletionMessageParam = {
                 role: 'assistant',
-                content: null,
+                content: '',
               };
               message['reasoning_content'] = thinkingBlock.thinking;
               chatMessages.push(message);
