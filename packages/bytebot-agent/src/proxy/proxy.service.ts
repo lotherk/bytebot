@@ -350,31 +350,49 @@ export class ProxyService implements BytebotAgentService {
         Array.isArray(message.tool_calls) &&
         message.tool_calls.length > 0
       ) {
-        const unmatchedToolCalls = message.tool_calls.filter((toolCall) => {
-          return !messages.slice(index + 1).some((laterMessage) => {
-            return (
-              laterMessage.role === 'tool' &&
-              'tool_call_id' in laterMessage &&
-              laterMessage.tool_call_id === toolCall.id
-            );
-          });
-        });
+        let lookaheadIndex = index + 1;
+        let allToolCallsSatisfied = true;
 
-        if (unmatchedToolCalls.length > 0) {
-          const description = unmatchedToolCalls
+        for (const toolCall of message.tool_calls) {
+          const nextMessage = messages[lookaheadIndex];
+
+          if (
+            !nextMessage ||
+            nextMessage.role !== 'tool' ||
+            !('tool_call_id' in nextMessage) ||
+            nextMessage.tool_call_id !== toolCall.id
+          ) {
+            allToolCallsSatisfied = false;
+            break;
+          }
+
+          lookaheadIndex += 1;
+        }
+
+        if (!allToolCallsSatisfied) {
+          const readableDescription = message.tool_calls
             .map((toolCall) => {
               const args = toolCall.function?.arguments || '{}';
               return `Tool call: ${toolCall.function?.name ?? 'unknown'} -> ${args}`;
             })
             .join('\n');
 
+          const existingTextContent =
+            typeof message.content === 'string' && message.content.trim().length > 0
+              ? message.content.trim()
+              : undefined;
+
+          const combinedDescription = [existingTextContent, readableDescription]
+            .filter(Boolean)
+            .join('\n\n');
+
           this.logger.warn(
-            `Found ${unmatchedToolCalls.length} assistant tool call(s) without immediate tool response. Converting to text description.`,
+            `Found assistant tool call without immediate tool response. Rewriting as text description.`,
           );
 
           sanitizedMessages.push({
             role: 'assistant',
-            content: description,
+            content: combinedDescription || readableDescription,
           });
           continue;
         }
