@@ -386,6 +386,25 @@ export class ProxyService implements BytebotAgentService {
             .filter(Boolean)
             .join('\n\n');
 
+          const debugContext = {
+            msgIndex: index,
+            lookaheadIndex,
+            toolCalls: message.tool_calls,
+            messageSnapshot: this.summarizeMessagesForDebug([message])[0],
+            followingMessages: this.summarizeMessagesForDebug(
+              messages.slice(index + 1, Math.min(messages.length, lookaheadIndex + 2)),
+            ),
+            messagesDump: this.summarizeMessagesForDebug(messages),
+          };
+
+          this.logger.debug(
+            `sanitizeToolCallHistory orphaned tool call debug payload: ${JSON.stringify(
+              debugContext,
+              null,
+              2,
+            )}`,
+          );
+
           this.logger.warn(
             `Found assistant tool call without immediate tool response. Rewriting as text description.`,
           );
@@ -402,5 +421,47 @@ export class ProxyService implements BytebotAgentService {
     }
 
     return sanitizedMessages;
+  }
+
+  private summarizeMessagesForDebug(
+    messages: ChatCompletionMessageParam[],
+  ): Record<string, unknown>[] {
+    return messages.map((message, index) => ({
+      index,
+      role: message.role,
+      content: this.truncateContentForDebug(message.content),
+      tool_call_id: 'tool_call_id' in message ? message.tool_call_id : undefined,
+      tool_calls: 'tool_calls' in message ? message.tool_calls : undefined,
+    }));
+  }
+
+  private truncateContentForDebug(content: ChatCompletionMessageParam['content']) {
+    if (typeof content === 'string') {
+      if (content.length > 200) {
+        return `${content.slice(0, 200)}… [truncated ${content.length - 200} chars]`;
+      }
+
+      return content;
+    }
+
+    if (Array.isArray(content)) {
+      return content.map((part) => {
+        const typedPart = part as ChatCompletionContentPart;
+
+        if (typedPart.type === 'image_url' && typedPart.image_url) {
+          return {
+            ...typedPart,
+            image_url: {
+              ...typedPart.image_url,
+              url: '[truncated]',
+            },
+          };
+        }
+
+        return typedPart;
+      });
+    }
+
+    return content;
   }
 }
