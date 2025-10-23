@@ -190,6 +190,7 @@ export class ProxyService implements BytebotAgentService {
               const toolBlock = block as ToolUseContentBlock;
               chatMessages.push({
                 role: 'assistant',
+                content: '',
                 tool_calls: [
                   {
                     id: toolBlock.id,
@@ -207,7 +208,7 @@ export class ProxyService implements BytebotAgentService {
               const thinkingBlock = block as ThinkingContentBlock;
               const message: ChatCompletionMessageParam = {
                 role: 'assistant',
-                content: null,
+                content: '',
               };
               message['reasoning_content'] = thinkingBlock.thinking;
               chatMessages.push(message);
@@ -263,7 +264,7 @@ export class ProxyService implements BytebotAgentService {
       }
     }
 
-    return chatMessages;
+    return this.sanitizeToolCallHistory(chatMessages);
   }
 
   /**
@@ -323,5 +324,65 @@ export class ProxyService implements BytebotAgentService {
     }
 
     return contentBlocks;
+  }
+
+  /**
+   * LiteLLM's Ollama prompt transformation expects every assistant tool call
+   * message to be followed by a corresponding tool response. When a tool call
+   * is the last message in the history (for example while we are still
+   * executing the tool), LiteLLM raises an IndexError while dereferencing the
+   * non-existent tool response message. To keep the transcript consistent and
+   * avoid the crash, we rewrite any orphaned tool call messages into plain text
+   * descriptions so the proxy still receives the full context without the
+   * problematic structure.
+   */
+  private sanitizeToolCallHistory(
+    messages: ChatCompletionMessageParam[],
+  ): ChatCompletionMessageParam[] {
+    const sanitizedMessages: ChatCompletionMessageParam[] = [];
+
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
+
+      if (
+        message.role === 'assistant' &&
+        'tool_calls' in message &&
+        Array.isArray(message.tool_calls) &&
+        message.tool_calls.length > 0
+      ) {
+        const unmatchedToolCalls = message.tool_calls.filter((toolCall) => {
+          return !messages.slice(index + 1).some((laterMessage) => {
+            return (
+              laterMessage.role === 'tool' &&
+              'tool_call_id' in laterMessage &&
+              laterMessage.tool_call_id === toolCall.id
+            );
+          });
+        });
+
+        if (unmatchedToolCalls.length === message.tool_calls.length) {
+          const description = unmatchedToolCalls
+            .map((toolCall) => {
+              const args = toolCall.function?.arguments || '{}';
+              return `Tool call: ${toolCall.function?.name ?? 'unknown'} -> ${args}`;
+            })
+            .join('\n');
+
+          this.logger.warn(
+            `Found assistant tool call(s) without matching tool response. Converting to text description.`,
+          );
+
+          sanitizedMessages.push({
+            role: 'assistant',
+            content: description,
+          });
+          continue;
+        }
+      }
+
+      sanitizedMessages.push(message);
+    }
+
+    return sanitizedMessages;
   }
 }
