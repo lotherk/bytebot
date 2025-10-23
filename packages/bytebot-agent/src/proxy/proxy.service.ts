@@ -387,6 +387,7 @@ export class ProxyService implements BytebotAgentService {
             .join('\n\n');
 
           const debugContext = {
+            msg_i: index,
             msgIndex: index,
             lookaheadIndex,
             toolCalls: message.tool_calls,
@@ -394,7 +395,8 @@ export class ProxyService implements BytebotAgentService {
             followingMessages: this.summarizeMessagesForDebug(
               messages.slice(index + 1, Math.min(messages.length, lookaheadIndex + 2)),
             ),
-            messagesDump: this.summarizeMessagesForDebug(messages),
+            messagesDump: messages,
+            messagesTruncated: this.summarizeMessagesForDebug(messages),
           };
 
           this.logger.debug(
