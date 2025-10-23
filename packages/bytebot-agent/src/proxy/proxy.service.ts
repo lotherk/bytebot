@@ -328,13 +328,13 @@ export class ProxyService implements BytebotAgentService {
 
   /**
    * LiteLLM's Ollama prompt transformation expects every assistant tool call
-   * message to be followed by a corresponding tool response. When a tool call
-   * is the last message in the history (for example while we are still
-   * executing the tool), LiteLLM raises an IndexError while dereferencing the
-   * non-existent tool response message. To keep the transcript consistent and
-   * avoid the crash, we rewrite any orphaned tool call messages into plain text
-   * descriptions so the proxy still receives the full context without the
-   * problematic structure.
+   * message to be immediately followed by a corresponding tool response.
+   * Whenever the next message is not a matching tool response (for example
+   * while we are still executing the tool), LiteLLM raises an IndexError while
+   * dereferencing the non-existent tool response message. To keep the transcript
+   * consistent and avoid the crash, we rewrite any orphaned tool call messages
+   * into plain text descriptions so the proxy still receives the full context
+   * without the problematic structure.
    */
   private sanitizeToolCallHistory(
     messages: ChatCompletionMessageParam[],
@@ -360,7 +360,7 @@ export class ProxyService implements BytebotAgentService {
           });
         });
 
-        if (unmatchedToolCalls.length === message.tool_calls.length) {
+        if (unmatchedToolCalls.length > 0) {
           const description = unmatchedToolCalls
             .map((toolCall) => {
               const args = toolCall.function?.arguments || '{}';
@@ -369,7 +369,7 @@ export class ProxyService implements BytebotAgentService {
             .join('\n');
 
           this.logger.warn(
-            `Found assistant tool call(s) without matching tool response. Converting to text description.`,
+            `Found ${unmatchedToolCalls.length} assistant tool call(s) without immediate tool response. Converting to text description.`,
           );
 
           sanitizedMessages.push({
