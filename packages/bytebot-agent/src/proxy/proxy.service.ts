@@ -264,7 +264,7 @@ export class ProxyService implements BytebotAgentService {
       }
     }
 
-    return chatMessages;
+    return this.sanitizeToolCallHistory(chatMessages);
   }
 
   /**
@@ -324,5 +324,146 @@ export class ProxyService implements BytebotAgentService {
     }
 
     return contentBlocks;
+  }
+
+  /**
+   * LiteLLM's Ollama prompt transformation expects every assistant tool call
+   * message to be immediately followed by a corresponding tool response.
+   * Whenever the next message is not a matching tool response (for example
+   * while we are still executing the tool), LiteLLM raises an IndexError while
+   * dereferencing the non-existent tool response message. To keep the transcript
+   * consistent and avoid the crash, we rewrite any orphaned tool call messages
+   * into plain text descriptions so the proxy still receives the full context
+   * without the problematic structure.
+   */
+  private sanitizeToolCallHistory(
+    messages: ChatCompletionMessageParam[],
+  ): ChatCompletionMessageParam[] {
+    const sanitizedMessages: ChatCompletionMessageParam[] = [];
+
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
+
+      if (
+        message.role === 'assistant' &&
+        'tool_calls' in message &&
+        Array.isArray(message.tool_calls) &&
+        message.tool_calls.length > 0
+      ) {
+        let lookaheadIndex = index + 1;
+        let allToolCallsSatisfied = true;
+
+        for (const toolCall of message.tool_calls) {
+          const nextMessage = messages[lookaheadIndex];
+
+          if (
+            !nextMessage ||
+            nextMessage.role !== 'tool' ||
+            !('tool_call_id' in nextMessage) ||
+            nextMessage.tool_call_id !== toolCall.id
+          ) {
+            allToolCallsSatisfied = false;
+            break;
+          }
+
+          lookaheadIndex += 1;
+        }
+
+        if (!allToolCallsSatisfied) {
+          const readableDescription = message.tool_calls
+            .map((toolCall) => {
+              const args = toolCall.function?.arguments || '{}';
+              return `Tool call: ${toolCall.function?.name ?? 'unknown'} -> ${args}`;
+            })
+            .join('\n');
+
+          const existingTextContent =
+            typeof message.content === 'string' && message.content.trim().length > 0
+              ? message.content.trim()
+              : undefined;
+
+          const combinedDescription = [existingTextContent, readableDescription]
+            .filter(Boolean)
+            .join('\n\n');
+
+          const debugContext = {
+            msg_i: index,
+            msgIndex: index,
+            lookaheadIndex,
+            toolCalls: message.tool_calls,
+            messageSnapshot: this.summarizeMessagesForDebug([message])[0],
+            followingMessages: this.summarizeMessagesForDebug(
+              messages.slice(index + 1, Math.min(messages.length, lookaheadIndex + 2)),
+            ),
+            messagesDump: messages,
+            messagesTruncated: this.summarizeMessagesForDebug(messages),
+          };
+
+          this.logger.debug(
+            `sanitizeToolCallHistory orphaned tool call debug payload: ${JSON.stringify(
+              debugContext,
+              null,
+              2,
+            )}`,
+          );
+
+          this.logger.warn(
+            `Found assistant tool call without immediate tool response. Rewriting as text description.`,
+          );
+
+          sanitizedMessages.push({
+            role: 'assistant',
+            content: combinedDescription || readableDescription,
+          });
+          continue;
+        }
+      }
+
+      sanitizedMessages.push(message);
+    }
+
+    return sanitizedMessages;
+  }
+
+  private summarizeMessagesForDebug(
+    messages: ChatCompletionMessageParam[],
+  ): Record<string, unknown>[] {
+    return messages.map((message, index) => ({
+      index,
+      role: message.role,
+      content: this.truncateContentForDebug(message.content),
+      tool_call_id: 'tool_call_id' in message ? message.tool_call_id : undefined,
+      tool_calls: 'tool_calls' in message ? message.tool_calls : undefined,
+    }));
+  }
+
+  private truncateContentForDebug(content: ChatCompletionMessageParam['content']) {
+    if (typeof content === 'string') {
+      if (content.length > 200) {
+        return `${content.slice(0, 200)}… [truncated ${content.length - 200} chars]`;
+      }
+
+      return content;
+    }
+
+    if (Array.isArray(content)) {
+      return content.map((part) => {
+        const typedPart = part as ChatCompletionContentPart;
+
+        if (typedPart.type === 'image_url' && typedPart.image_url) {
+          return {
+            ...typedPart,
+            image_url: {
+              ...typedPart.image_url,
+              url: '[truncated]',
+            },
+          };
+        }
+
+        return typedPart;
+      });
+    }
+
+    return content;
   }
 }
